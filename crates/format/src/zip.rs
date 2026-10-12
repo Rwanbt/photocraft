@@ -147,10 +147,7 @@ impl<'a> ZipReader<'a> {
         let min = bytes.len().saturating_sub(22 + 65535);
         let eocd = (min..=bytes.len() - 22)
             .rev()
-            .find(|&i| {
-                u32_at(bytes, i).ok() == Some(EOCD_SIG)
-                    && u16_at(bytes, i + 20).is_ok_and(|comment_len| bytes.len() - i - 22 == comment_len as usize)
-            })
+            .find(|&i| u32_at(bytes, i).ok() == Some(EOCD_SIG) && u16_at(bytes, i + 20).is_ok_and(|comment_len| bytes.len() - i - 22 == comment_len as usize))
             .ok_or_else(|| FormatError::corrupt("zip end-of-central-directory not found"))?;
         let count = u16_at(bytes, eocd + 10)? as usize;
         let cd_size = u32_at(bytes, eocd + 12)? as usize;
