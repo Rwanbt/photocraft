@@ -323,4 +323,33 @@ mod tests {
         assert!(u16_at(&[], usize::MAX).is_err());
         assert!(u32_at(&[], usize::MAX - 3).is_err());
     }
+    #[test]
+    fn oversized_utf8_entry_name_is_rejected_without_poisoning_writer() {
+        let mut writer = ZipWriter::new();
+        let overlong_ascii = "x".repeat(u16::MAX as usize + 1);
+        assert!(matches!(writer.add(&overlong_ascii, b"bad"), Err(FormatError::Unsupported(_))));
+        // The limit applies to the encoded byte length, not Unicode scalar count.
+        let overlong_unicode = format!("{}é", "a".repeat(u16::MAX as usize - 1));
+        assert_eq!(overlong_unicode.len(), u16::MAX as usize + 1);
+        assert!(matches!(writer.add(&overlong_unicode, b"bad"), Err(FormatError::Unsupported(_))));
+
+        // Failed additions must not change the entry count or corrupt the archive.
+        writer.add("manifest.json", b"good").unwrap();
+        let archive = ZipReader::new(&writer.finish().unwrap()).unwrap();
+        assert_eq!(archive.entries.len(), 1);
+        assert_eq!(archive.read_by_name("manifest.json", 4).unwrap(), b"good");
+    }
+
+    #[test]
+    fn maximum_legal_utf8_entry_name_round_trips() {
+        let name = format!("{}é", "a".repeat(u16::MAX as usize - 2));
+        assert_eq!(name.len(), u16::MAX as usize);
+        let mut writer = ZipWriter::new();
+        writer.add(&name, b"ok").unwrap();
+        let bytes = writer.finish().unwrap();
+        let archive = ZipReader::new(&bytes).unwrap();
+        assert_eq!(archive.entries.len(), 1);
+        assert_eq!(archive.read_by_name(&name, 2).unwrap(), b"ok");
+    }
+
 }
