@@ -1,0 +1,61 @@
+name: Geometry coverage
+
+on:
+  pull_request:
+    paths:
+      - "crates/geom/**"
+      - ".github/workflows/geom-coverage.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: geom-coverage-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  geometry-llvm-cov:
+    name: Instrumented geometry tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Execute tests with LLVM coverage
+        run: |
+          cargo llvm-cov -p photocraft-geom --lib --locked --json --output-path coverage.json
+          cargo llvm-cov report --lcov --output-path coverage.lcov
+      - name: Summarize the measured baseline
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          data = json.loads(Path("coverage.json").read_text(encoding="utf-8"))
+          totals = data["data"][0]["totals"]
+          lines = ["### photocraft-geom: LLVM coverage (instrumented)"]
+          lines += ["", "| Metric | Covered | Total | Percent |", "| --- | ---: | ---: | ---: |"]
+          for metric in ("lines", "functions", "branches", "regions"):
+              if metric not in totals:
+                  continue
+              item = totals[metric]
+              lines.append(
+                  f"| {metric} | {item['covered']} | {item['count']} | {item['percent']:.2f}% |"
+              )
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as out:
+              out.write("\n".join(lines) + "\n")
+          PY
+      - name: Upload instrumented results
+        uses: actions/upload-artifact@v4
+        with:
+          name: photocraft-geom-llvm-coverage
+          path: |
+            coverage.json
+            coverage.lcov
+          if-no-files-found: error
+          retention-days: 30
