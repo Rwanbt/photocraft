@@ -90,7 +90,7 @@ fn loader_rejects_manifest_symlink_even_if_external_manifest_is_valid() {
     let outside = root.join("copied-manifest.json");
     std::fs::rename(bundle.join("manifest.json"), &outside).unwrap();
     symlink(&outside, bundle.join("manifest.json")).unwrap();
-    assert_refused(photocraft_format::load_path(&bundle).expect_err("linked manifest must not be read"));
+    assert_refused(photocraft_format::load_path(&bundle).err().expect("linked manifest must not be read"));
     std::fs::remove_dir_all(root).unwrap();
 }
 
@@ -109,7 +109,7 @@ fn loader_rejects_external_symlinked_tile_even_with_matching_hash() {
     let outside = root.join("copied-object.zst");
     std::fs::rename(&tile, &outside).unwrap();
     symlink(&outside, &tile).unwrap();
-    assert_refused(photocraft_format::load_path(&bundle).expect_err("linked tile must not be read"));
+    assert_refused(photocraft_format::load_path(&bundle).err().expect("linked tile must not be read"));
     std::fs::remove_dir_all(root).unwrap();
 }
 
@@ -123,6 +123,6 @@ fn loader_rejects_symlinked_tiles_directory_even_with_valid_objects() {
     let outside_tiles = root.join("external-tiles");
     std::fs::rename(bundle.join("tiles"), &outside_tiles).unwrap();
     symlink(&outside_tiles, bundle.join("tiles")).unwrap();
-    assert_refused(photocraft_format::load_path(&bundle).expect_err("linked tiles directory must not be read"));
+    assert_refused(photocraft_format::load_path(&bundle).err().expect("linked tiles directory must not be read"));
     std::fs::remove_dir_all(root).unwrap();
 }
