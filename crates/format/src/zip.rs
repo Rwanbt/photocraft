@@ -335,7 +335,8 @@ mod tests {
 
         // Failed additions must not change the entry count or corrupt the archive.
         writer.add("manifest.json", b"good").unwrap();
-        let archive = ZipReader::new(&writer.finish().unwrap()).unwrap();
+        let bytes = writer.finish().unwrap();
+        let archive = ZipReader::new(&bytes).unwrap();
         assert_eq!(archive.entries.len(), 1);
         assert_eq!(archive.read_by_name("manifest.json", 4).unwrap(), b"good");
     }
