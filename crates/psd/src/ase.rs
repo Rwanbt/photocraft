@@ -16,7 +16,7 @@
 //! (colour models) or skipped (block types). Converting colours is the caller's job.
 
 use crate::error::{PsdError, Result};
-use crate::io::{Reader, WriteExt};
+use crate::io::{Reader, WriteExt, utf16_prefix};
 
 /// File signature.
 pub const SIGNATURE: &[u8; 4] = b"ASEF";
@@ -146,6 +146,11 @@ fn read_name(r: &mut Reader<'_>) -> Result<String> {
     while units.last() == Some(&0) {
         units.pop();
     }
+    // An over-limit external name may be cut just after a high surrogate.
+    // Discard that incomplete character rather than creating U+FFFD.
+    if n > MAX_NAME_UNITS && units.last().is_some_and(|u| (0xD800..=0xDBFF).contains(u)) {
+        units.pop();
+    }
     Ok(String::from_utf16_lossy(&units))
 }
 
@@ -226,7 +231,7 @@ pub fn parse(data: &[u8]) -> Result<AseFile> {
 }
 
 fn put_name(out: &mut Vec<u8>, name: &str) {
-    let units: Vec<u16> = name.encode_utf16().take(MAX_NAME_UNITS).collect();
+    let units = utf16_prefix(name, MAX_NAME_UNITS);
     out.put_u16(units.len() as u16 + 1);
     for u in units {
         out.put_u16(u);
@@ -411,5 +416,45 @@ mod tests {
         let s = sw("", AseColor::Gray(0.0), AseKind::Process);
         let f = AseFile { entries: vec![AseEntry::Group { name: "g".into(), swatches: vec![s; MAX_SWATCHES + 1] }] };
         assert!(write(&f).is_err());
+    }
+
+    #[test]
+    fn truncated_utf16_group_and_swatch_names_never_split_surrogate_pairs() {
+        let prefix = "a".repeat(MAX_NAME_UNITS - 1);
+        let too_long = format!("{prefix}😀suffix");
+        let swatch = AseSwatch { name: too_long.clone(), color: AseColor::Gray(0.5), kind: AseKind::Process };
+        let file = AseFile { entries: vec![AseEntry::Group { name: too_long, swatches: vec![swatch] }] };
+        let reopened = parse(&write(&file).unwrap()).unwrap();
+        let AseEntry::Group { name, swatches } = &reopened.entries[0] else {
+            panic!("expected group");
+        };
+        assert_eq!(name, &prefix);
+        assert_eq!(swatches[0].name, prefix);
+        assert!(!name.contains('�'));
+    }
+
+    #[test]
+    fn maximum_fit_utf16_group_and_swatch_names_preserve_non_bmp_character() {
+        let name = format!("{}😀", "a".repeat(MAX_NAME_UNITS - 2));
+        let swatch = AseSwatch { name: name.clone(), color: AseColor::Gray(0.5), kind: AseKind::Process };
+        let file = AseFile { entries: vec![AseEntry::Group { name: name.clone(), swatches: vec![swatch] }] };
+        let reopened = parse(&write(&file).unwrap()).unwrap();
+        assert_eq!(reopened, file);
+    }
+
+    #[test]
+    fn externally_encoded_overlong_ase_group_name_does_not_split_surrogate_on_read() {
+        let prefix = "a".repeat(MAX_NAME_UNITS - 1);
+        let utf16: Vec<u16> = format!("{prefix}😀").encode_utf16().chain(std::iter::once(0)).collect();
+        let mut body = (utf16.len() as u16).to_be_bytes().to_vec();
+        for unit in utf16 {
+            body.extend_from_slice(&unit.to_be_bytes());
+        }
+        let mut bytes = b"ASEF\0\x01\0\0\0\0\0\x01".to_vec();
+        bytes.extend_from_slice(&GROUP_START.to_be_bytes());
+        bytes.extend_from_slice(&(body.len() as u32).to_be_bytes());
+        bytes.extend_from_slice(&body);
+        let reopened = parse(&bytes).unwrap();
+        assert_eq!(reopened.entries, vec![AseEntry::Group { name: prefix, swatches: Vec::new() }]);
     }
 }

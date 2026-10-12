@@ -225,6 +225,22 @@ pub(crate) fn encode_legacy_name(s: &str) -> Vec<u8> {
     s.chars().map(|c| if c.is_ascii() && !c.is_ascii_control() { c as u8 } else { b'?' }).take(255).collect()
 }
 
+/// Encode at most `max_units` UTF-16 code units, stopping at a complete
+/// Unicode scalar boundary. Swatch formats truncate long names on save; simply
+/// taking the first N code units can sever a surrogate pair and change a name
+/// into U+FFFD when the file is opened again.
+pub(crate) fn utf16_prefix(name: &str, max_units: usize) -> Vec<u16> {
+    let mut out = Vec::with_capacity(name.len().min(max_units));
+    for ch in name.chars() {
+        if ch.len_utf16() > max_units.saturating_sub(out.len()) {
+            break;
+        }
+        let mut pair = [0u16; 2];
+        out.extend_from_slice(ch.encode_utf16(&mut pair));
+    }
+    out
+}
+
 /// Reads a Photoshop Unicode string: u32 code-unit count + UTF-16BE units.
 pub(crate) fn read_unicode_units(r: &mut Reader<'_>) -> Result<Vec<u16>> {
     let n = r.u32()? as u64;
@@ -319,5 +335,14 @@ mod tests {
         assert_eq!(read_unicode_units(&mut r).unwrap(), vec![0x48, 0x69, 0]);
         let mut r = Reader::new(&[0xff, 0xff, 0xff, 0xff]);
         assert!(read_unicode_units(&mut r).is_err());
+    }
+
+    #[test]
+    fn utf16_prefix_respects_surrogate_boundaries_and_capacity() {
+        assert_eq!(utf16_prefix("a😀Z", 0), Vec::<u16>::new());
+        assert_eq!(utf16_prefix("a😀Z", 1), vec![u16::from(b'a')]);
+        assert_eq!(utf16_prefix("a😀Z", 2), vec![u16::from(b'a')]);
+        assert_eq!(utf16_prefix("a😀Z", 3), "a😀".encode_utf16().collect::<Vec<_>>());
+        assert_eq!(utf16_prefix("a😀Z", 4), "a😀Z".encode_utf16().collect::<Vec<_>>());
     }
 }

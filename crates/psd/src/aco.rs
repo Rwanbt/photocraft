@@ -14,7 +14,7 @@
 //! read → write round trip never loses it. Converting colours is the caller's job.
 
 use crate::error::{PsdError, Result};
-use crate::io::{Reader, WriteExt};
+use crate::io::{Reader, WriteExt, utf16_prefix};
 
 /// Most swatches in one file (the counts are 16-bit).
 pub const MAX_SWATCHES: usize = u16::MAX as usize;
@@ -129,6 +129,11 @@ fn read_name(r: &mut Reader<'_>) -> Result<String> {
     while units.last() == Some(&0) {
         units.pop();
     }
+    // An over-limit external name may be cut just after a high surrogate.
+    // Discard that incomplete character rather than creating U+FFFD.
+    if n > MAX_NAME_UNITS && units.last().is_some_and(|u| (0xD800..=0xDBFF).contains(u)) {
+        units.pop();
+    }
     Ok(String::from_utf16_lossy(&units))
 }
 
@@ -181,7 +186,7 @@ pub fn write(swatches: &[AcoSwatch]) -> Result<Vec<u8>> {
                 out.put_u16(x);
             }
             if version == 2 {
-                let units: Vec<u16> = s.name.encode_utf16().take(MAX_NAME_UNITS).collect();
+                let units = utf16_prefix(&s.name, MAX_NAME_UNITS);
                 // The length counts the terminating null.
                 out.put_u32(units.len() as u32 + 1);
                 for u in units {
@@ -295,5 +300,38 @@ mod tests {
         let long = AcoSwatch { name: "x".repeat(5000), color: AcoColor::Gray(0) };
         let f = parse(&write(&[long]).unwrap()).unwrap();
         assert_eq!(f.swatches[0].name.len(), MAX_NAME_UNITS);
+    }
+
+    #[test]
+    fn truncated_utf16_swatch_name_never_replaces_a_split_surrogate() {
+        let prefix = "a".repeat(MAX_NAME_UNITS - 1);
+        let too_long = format!("{prefix}😀suffix");
+        let swatch = AcoSwatch { name: too_long, color: AcoColor::Gray(5000) };
+        let saved = write(&[swatch]).unwrap();
+        let reopened = parse(&saved).unwrap();
+        assert_eq!(reopened.swatches[0].name, prefix);
+        assert!(!reopened.swatches[0].name.contains('�'));
+    }
+
+    #[test]
+    fn maximum_fit_utf16_swatch_name_preserves_complete_non_bmp_character() {
+        let name = format!("{}😀", "a".repeat(MAX_NAME_UNITS - 2));
+        let swatch = AcoSwatch { name: name.clone(), color: AcoColor::Gray(0) };
+        let reopened = parse(&write(&[swatch]).unwrap()).unwrap();
+        assert_eq!(reopened.swatches[0].name, name);
+    }
+
+    #[test]
+    fn externally_encoded_overlong_aco_name_does_not_split_surrogate_on_read() {
+        let prefix = "a".repeat(MAX_NAME_UNITS - 1);
+        let utf16: Vec<u16> = format!("{prefix}😀").encode_utf16().chain(std::iter::once(0)).collect();
+        let mut bytes = vec![0, 2, 0, 1];
+        bytes.extend_from_slice(&[0; 10]); // one RGB colour record
+        bytes.extend_from_slice(&(utf16.len() as u32).to_be_bytes());
+        for unit in utf16 {
+            bytes.extend_from_slice(&unit.to_be_bytes());
+        }
+        let reopened = parse(&bytes).unwrap();
+        assert_eq!(reopened.swatches[0].name, prefix);
     }
 }
