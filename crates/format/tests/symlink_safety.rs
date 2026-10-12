@@ -79,3 +79,50 @@ fn individual_tile_symlink_cannot_overwrite_external_destination() {
     assert_eq!(std::fs::read(&outside).unwrap(), b"untouched private bytes");
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn loader_rejects_manifest_symlink_even_if_external_manifest_is_valid() {
+    let doc = sample_doc();
+    let root = temp_dir("load-manifest-link");
+    let bundle = root.join("bundle");
+    PcraftWriter::new().save_dir(&doc, &bundle, &SaveOptions::default()).unwrap();
+
+    let outside = root.join("copied-manifest.json");
+    std::fs::rename(bundle.join("manifest.json"), &outside).unwrap();
+    symlink(&outside, bundle.join("manifest.json")).unwrap();
+    assert_refused(photocraft_format::load_path(&bundle).expect_err("linked manifest must not be read"));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn loader_rejects_external_symlinked_tile_even_with_matching_hash() {
+    let doc = sample_doc();
+    let root = temp_dir("load-object-link");
+    let bundle = root.join("bundle");
+    PcraftWriter::new().save_dir(&doc, &bundle, &SaveOptions::default()).unwrap();
+
+    let tile = std::fs::read_dir(bundle.join("tiles"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.extension().is_some_and(|ext| ext == "zst"))
+        .expect("sample has tiles");
+    let outside = root.join("copied-object.zst");
+    std::fs::rename(&tile, &outside).unwrap();
+    symlink(&outside, &tile).unwrap();
+    assert_refused(photocraft_format::load_path(&bundle).expect_err("linked tile must not be read"));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn loader_rejects_symlinked_tiles_directory_even_with_valid_objects() {
+    let doc = sample_doc();
+    let root = temp_dir("load-directory-link");
+    let bundle = root.join("bundle");
+    PcraftWriter::new().save_dir(&doc, &bundle, &SaveOptions::default()).unwrap();
+
+    let outside_tiles = root.join("external-tiles");
+    std::fs::rename(bundle.join("tiles"), &outside_tiles).unwrap();
+    symlink(&outside_tiles, bundle.join("tiles")).unwrap();
+    assert_refused(photocraft_format::load_path(&bundle).expect_err("linked tiles directory must not be read"));
+    std::fs::remove_dir_all(root).unwrap();
+}
