@@ -121,9 +121,14 @@ impl TileCoord {
         Self::new(x.div_euclid(TILE_SIZE), y.div_euclid(TILE_SIZE))
     }
     pub fn rect(&self) -> Rect {
-        // Public callers can construct out-of-range tile indices directly.
-        // Saturate rather than overflow before constructing the bounded rectangle.
-        Rect::from_xywh(self.tx.saturating_mul(TILE_SIZE), self.ty.saturating_mul(TILE_SIZE), TILE_SIZE as u32, TILE_SIZE as u32)
+        // Out-of-range indices must not alias a real edge tile via saturation.
+        let Some(x) = self.tx.checked_mul(TILE_SIZE) else {
+            return Rect::EMPTY;
+        };
+        let Some(y) = self.ty.checked_mul(TILE_SIZE) else {
+            return Rect::EMPTY;
+        };
+        Rect::from_xywh(x, y, TILE_SIZE as u32, TILE_SIZE as u32)
     }
 }
 
@@ -181,13 +186,18 @@ impl Affine {
         self.m[0] * self.m[3] - self.m[1] * self.m[2]
     }
     pub fn inverse(&self) -> Option<Affine> {
+        // A non-finite matrix or inverse cannot safely map document coordinates.
+        if self.m.iter().any(|v| !v.is_finite()) {
+            return None;
+        }
         let det = self.determinant();
-        if det.abs() < 1e-12 {
+        if !det.is_finite() || det.abs() < 1e-12 {
             return None;
         }
         let [a, b, c, d, e, f] = self.m;
         let inv = 1.0 / det;
-        Some(Affine { m: [d * inv, -b * inv, -c * inv, a * inv, (c * f - d * e) * inv, (b * e - a * f) * inv] })
+        let result = Affine { m: [d * inv, -b * inv, -c * inv, a * inv, (c * f - d * e) * inv, (b * e - a * f) * inv] };
+        result.m.iter().all(|v| v.is_finite()).then_some(result)
     }
 }
 
@@ -291,9 +301,38 @@ mod tests {
     fn tile_rect_saturates_unrepresentable_indices() {
         // TileCoord is publicly constructible: these values must not panic in debug builds.
         let at_extremes = TileCoord::new(i32::MAX, i32::MIN).rect();
-        assert_eq!(at_extremes, Rect::new(i32::MAX, i32::MIN, i32::MAX, i32::MIN + TILE_SIZE),);
+        assert_eq!(at_extremes, Rect::EMPTY);
+        assert_eq!(TileCoord::new(i32::MIN, 0).rect(), Rect::EMPTY);
 
         let regular = TileCoord::new(-1, 1).rect();
         assert_eq!(regular, Rect::new(-TILE_SIZE, TILE_SIZE, 0, 2 * TILE_SIZE));
     }
+    #[test]
+    fn size_area_and_emptiness_preserve_unsigned_extremes() {
+        assert!(Size::new(0, u32::MAX).is_empty());
+        assert!(Size::new(u32::MAX, 0).is_empty());
+        assert!(!Size::new(1, u32::MAX).is_empty());
+        assert_eq!(Size::new(u32::MAX, u32::MAX).area(), u64::from(u32::MAX) * u64::from(u32::MAX));
+    }
+
+    #[test]
+    fn rect_containment_respects_edges_and_empty_contract() {
+        let outer = Rect::new(-10, -10, 10, 10);
+        assert!(outer.contains_rect(&outer));
+        assert!(outer.contains_rect(&Rect::new(1, 1, 1, 1)));
+        assert!(Rect::EMPTY.contains_rect(&Rect::EMPTY));
+        assert!(!outer.contains_rect(&Rect::new(-11, 0, 5, 5)));
+        assert!(!outer.contains_rect(&Rect::new(0, 0, 11, 5)));
+    }
+
+    #[test]
+    fn inverse_rejects_nonfinite_matrices_and_overflowed_results() {
+        assert_eq!(Affine::default(), Affine::IDENTITY);
+        assert_eq!(Affine::IDENTITY.inverse(), Some(Affine::IDENTITY));
+        assert!(Affine::translate(f64::NAN, 2.0).inverse().is_none());
+        assert!(Affine::scale(f64::INFINITY).inverse().is_none());
+        assert!(Affine::scale(1e300).inverse().is_none());
+        assert!(Affine { m: [1.0, 0.0, 0.0, 1.0, f64::INFINITY, 0.0] }.inverse().is_none());
+    }
+
 }

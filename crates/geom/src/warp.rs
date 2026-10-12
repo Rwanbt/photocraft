@@ -166,6 +166,10 @@ impl StyleWarp {
         if !style.is_preset() {
             return None;
         }
+        // Reject infinite boxes before calculating their centre and half-extents.
+        if bounds.iter().any(|v| !v.is_finite()) {
+            return None;
+        }
         let [x0, y0, x1, y1] = bounds;
         let (hw, hh) = ((x1 - x0) / 2.0, (y1 - y0) / 2.0);
         if !(hw > 0.0 && hh > 0.0) {
@@ -1194,4 +1198,38 @@ mod tests {
         let ob = Warp::none(B).output_bounds();
         assert!((ob[0] - 10.0).abs() < 1e-9 && (ob[3] - 70.0).abs() < 1e-9);
     }
+    #[test]
+    fn identity_mesh_helpers_and_segment_budget_are_correct() {
+        let mesh = BezierMesh::identity(B, 1, 1);
+        assert_eq!(mesh.point(0, 0), [B[0], B[1]]);
+        let observed = mesh.control_bounds();
+        for (actual, expected) in observed.into_iter().zip(B) {
+            assert!((actual - expected).abs() < 1e-9);
+        }
+        let preset = StyleWarp::new(WarpStyle::Arc, 50.0, 0.0, 0.0, false, B).unwrap();
+        assert_eq!(preset.max_segment(), 25.0 / 16.0);
+        let tiny = StyleWarp::new(WarpStyle::Arc, 50.0, 0.0, 0.0, false, [0.0, 0.0, 1.0, 1.0]).unwrap();
+        assert_eq!(tiny.max_segment(), 0.5);
+    }
+
+    #[test]
+    fn lower_arc_keeps_bottom_edge_and_matches_arc_on_top() {
+        let lower = StyleWarp::new(WarpStyle::ArcLower, 45.0, 0.0, 0.0, false, B).unwrap();
+        let full = StyleWarp::new(WarpStyle::Arc, 45.0, 0.0, 0.0, false, B).unwrap();
+        for x in [B[0], 35.0, 60.0, 85.0, B[2]] {
+            let bottom = lower.apply(x, B[1]);
+            assert!((bottom.0 - x).abs() < 1e-9 && (bottom.1 - B[1]).abs() < 1e-9);
+            let top = lower.apply(x, B[3]);
+            let expected = full.apply(x, B[3]);
+            assert!((top.0 - expected.0).abs() < 1e-9 && (top.1 - expected.1).abs() < 1e-9);
+        }
+    }
+
+    #[test]
+    fn nonfinite_preset_bounds_are_rejected() {
+        for bad in [[0.0, 0.0, f64::INFINITY, 10.0], [0.0, 0.0, 10.0, f64::INFINITY], [f64::NAN, 0.0, 10.0, 10.0]] {
+            assert!(StyleWarp::new(WarpStyle::Arc, 50.0, 0.0, 0.0, false, bad).is_none());
+        }
+    }
+
 }
