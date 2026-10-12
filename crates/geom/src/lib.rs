@@ -123,12 +123,7 @@ impl TileCoord {
     pub fn rect(&self) -> Rect {
         // Public callers can construct out-of-range tile indices directly.
         // Saturate rather than overflow before constructing the bounded rectangle.
-        Rect::from_xywh(
-            self.tx.saturating_mul(TILE_SIZE),
-            self.ty.saturating_mul(TILE_SIZE),
-            TILE_SIZE as u32,
-            TILE_SIZE as u32,
-        )
+        Rect::from_xywh(self.tx.saturating_mul(TILE_SIZE), self.ty.saturating_mul(TILE_SIZE), TILE_SIZE as u32, TILE_SIZE as u32)
     }
 }
 
@@ -289,23 +284,16 @@ mod tests {
         // The addition is evaluated before clamping: MIN + u32::MAX = MAX.
         let full_span = Rect::from_xywh(i32::MIN, i32::MIN, u32::MAX, u32::MAX);
         assert_eq!(full_span, Rect::new(i32::MIN, i32::MIN, i32::MAX, i32::MAX));
-        assert_eq!(
-            Rect::from_size(Size::new(u32::MAX, u32::MAX)),
-            Rect::new(0, 0, i32::MAX, i32::MAX),
-        );
+        assert_eq!(Rect::from_size(Size::new(u32::MAX, u32::MAX)), Rect::new(0, 0, i32::MAX, i32::MAX),);
     }
 
     #[test]
     fn tile_rect_saturates_unrepresentable_indices() {
         // TileCoord is publicly constructible: these values must not panic in debug builds.
         let at_extremes = TileCoord::new(i32::MAX, i32::MIN).rect();
-        assert_eq!(
-            at_extremes,
-            Rect::new(i32::MAX, i32::MIN, i32::MAX, i32::MIN + TILE_SIZE),
-        );
+        assert_eq!(at_extremes, Rect::new(i32::MAX, i32::MIN, i32::MAX, i32::MIN + TILE_SIZE),);
 
         let regular = TileCoord::new(-1, 1).rect();
         assert_eq!(regular, Rect::new(-TILE_SIZE, TILE_SIZE, 0, 2 * TILE_SIZE));
     }
-
 }
