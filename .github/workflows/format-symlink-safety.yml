@@ -1,0 +1,38 @@
+name: Native bundle symlink boundary
+
+on:
+  pull_request:
+    paths:
+      - "crates/format/**"
+      - ".github/workflows/format-symlink-safety.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: format-symlink-safety-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unix-symlink-safety:
+    name: Reject external filesystem redirections
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: format-symlinks
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Rustfmt
+        run: cargo fmt --all -- --check
+      - name: Directory symlink regression cases
+        run: cargo test -p photocraft-format --locked --test symlink_safety -- --nocapture
+      - name: Entire native-format test suite
+        run: cargo test -p photocraft-format --locked
+      - name: Clippy
+        run: cargo clippy -p photocraft-format --all-targets --locked -- -D warnings
