@@ -54,10 +54,13 @@ impl ZipWriter {
         if self.count == u16::MAX {
             return Err(FormatError::Unsupported("more than 65535 zip entries (ZIP64 not supported)".into()));
         }
+        // The ZIP local and central headers encode the UTF-8 filename length as u16.
+        // Validate before writing either header; a cast would truncate and corrupt the archive.
+        let name_b = name.as_bytes();
+        let name_len = u16::try_from(name_b.len()).map_err(|_| FormatError::Unsupported("zip entry filename exceeds 65535 UTF-8 bytes".into()))?;
         let size = u32::try_from(data.len()).map_err(|_| FormatError::Unsupported("zip entry over 4 GiB".into()))?;
         let offset = u32::try_from(self.out.len()).map_err(|_| FormatError::Unsupported("zip over 4 GiB".into()))?;
         let crc = crc32(data);
-        let name_b = name.as_bytes();
         // Local file header.
         let o = &mut self.out;
         o.extend_from_slice(&LOCAL_SIG.to_le_bytes());
@@ -69,7 +72,7 @@ impl ZipWriter {
         o.extend_from_slice(&crc.to_le_bytes());
         o.extend_from_slice(&size.to_le_bytes());
         o.extend_from_slice(&size.to_le_bytes());
-        o.extend_from_slice(&(name_b.len() as u16).to_le_bytes());
+        o.extend_from_slice(&name_len.to_le_bytes());
         o.extend_from_slice(&0u16.to_le_bytes());
         o.extend_from_slice(name_b);
         o.extend_from_slice(data);
@@ -85,7 +88,7 @@ impl ZipWriter {
         c.extend_from_slice(&crc.to_le_bytes());
         c.extend_from_slice(&size.to_le_bytes());
         c.extend_from_slice(&size.to_le_bytes());
-        c.extend_from_slice(&(name_b.len() as u16).to_le_bytes());
+        c.extend_from_slice(&name_len.to_le_bytes());
         c.extend_from_slice(&[0; 8]); // extra len, comment len, disk, internal attrs
         c.extend_from_slice(&0u32.to_le_bytes()); // external attrs
         c.extend_from_slice(&offset.to_le_bytes());
@@ -96,7 +99,10 @@ impl ZipWriter {
 
     pub fn finish(mut self) -> Result<Vec<u8>, FormatError> {
         let cd_offset = u32::try_from(self.out.len()).map_err(|_| FormatError::Unsupported("zip over 4 GiB".into()))?;
-        let cd_size = self.central.len() as u32;
+        let cd_size = u32::try_from(self.central.len()).map_err(|_| FormatError::Unsupported("zip central directory over 4 GiB".into()))?;
+        if cd_offset.checked_add(cd_size).is_none() {
+            return Err(FormatError::Unsupported("zip over 4 GiB (ZIP64 not supported)".into()));
+        }
         self.out.extend_from_slice(&self.central);
         self.out.extend_from_slice(&EOCD_SIG.to_le_bytes());
         self.out.extend_from_slice(&[0; 4]); // disk numbers
@@ -351,5 +357,60 @@ mod tests {
         let archive = ZipReader::new(&bytes).unwrap();
         assert_eq!(archive.entries.len(), 1);
         assert_eq!(archive.read_by_name(&name, 2).unwrap(), b"ok");
+    }
+
+    #[test]
+    fn corrupt_central_directory_offsets_and_counts_are_rejected() {
+        let mut writer = ZipWriter::new();
+        writer.add("manifest.json", b"good").unwrap();
+        let valid = writer.finish().unwrap();
+        let eocd = valid.len() - 22;
+        let central = u32_at(&valid, eocd + 16).unwrap() as usize;
+
+        let mut wrong_signature = valid.clone();
+        wrong_signature[central..central + 4].copy_from_slice(&0u32.to_le_bytes());
+        assert!(matches!(ZipReader::new(&wrong_signature), Err(FormatError::Corrupt(_))));
+
+        let mut impossible_local = valid.clone();
+        impossible_local[central + 42..central + 46].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(matches!(ZipReader::new(&impossible_local), Err(FormatError::Corrupt(_))));
+
+        let mut impossible_size = valid.clone();
+        impossible_size[eocd + 12..eocd + 16].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(matches!(ZipReader::new(&impossible_size), Err(FormatError::Corrupt(_))));
+
+        let mut wrong_count = valid;
+        wrong_count[eocd + 10..eocd + 12].copy_from_slice(&2u16.to_le_bytes());
+        assert!(matches!(ZipReader::new(&wrong_count), Err(FormatError::Corrupt(_))));
+    }
+
+    #[test]
+    fn encrypted_entries_and_unsupported_compression_are_rejected() {
+        let mut writer = ZipWriter::new();
+        writer.add("manifest.json", b"data").unwrap();
+        let valid = writer.finish().unwrap();
+        let central = u32_at(&valid, valid.len() - 22 + 16).unwrap() as usize;
+
+        let mut encrypted = valid.clone();
+        encrypted[central + 8..central + 10].copy_from_slice(&1u16.to_le_bytes());
+        assert!(matches!(ZipReader::new(&encrypted), Err(FormatError::Unsupported(_))));
+
+        let mut unsupported = valid;
+        unsupported[central + 10..central + 12].copy_from_slice(&99u16.to_le_bytes());
+        let archive = ZipReader::new(&unsupported).unwrap();
+        assert!(matches!(archive.read_by_name("manifest.json", 4), Err(FormatError::Unsupported(_))));
+        assert!(matches!(archive.read_by_name("missing", 4), Err(FormatError::Corrupt(_))));
+    }
+
+    #[test]
+    fn writer_empty_archive_and_zero_byte_entry_are_readable() {
+        let empty = ZipWriter::new().finish().unwrap();
+        assert!(ZipReader::new(&empty).unwrap().entries.is_empty());
+
+        let mut writer = ZipWriter::new();
+        writer.add("zero", b"").unwrap();
+        let bytes = writer.finish().unwrap();
+        let archive = ZipReader::new(&bytes).unwrap();
+        assert_eq!(archive.read_by_name("zero", 0).unwrap(), b"");
     }
 }

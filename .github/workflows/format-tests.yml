@@ -25,16 +25,46 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
+          components: rustfmt, clippy, llvm-tools-preview
       - uses: Swatinem/rust-cache@v2
         with:
           key: format-integrity
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Rustfmt
         run: cargo fmt --all -- --check
+      - uses: taiki-e/install-action@cargo-llvm-cov
       - name: Rust unit tests
         run: cargo test -p photocraft-format --locked --lib
       - name: Rust integration tests
         run: cargo test -p photocraft-format --locked --tests
       - name: Clippy
         run: cargo clippy -p photocraft-format --all-targets --locked -- -D warnings
+      - name: LLVM coverage for native format library
+        run: |
+          cargo llvm-cov -p photocraft-format --lib --locked --json --output-path coverage-format.json
+          cargo llvm-cov report --lcov --output-path coverage-format.lcov
+      - name: Record actual coverage totals
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          data = json.loads(Path("coverage-format.json").read_text(encoding="utf-8"))["data"][0]["totals"]
+          lines = ["### PhotoCraft native format (LLVM)", "", "| Metric | Covered | Total | Percent |", "| --- | ---: | ---: | ---: |"]
+          for key in ("lines", "functions", "branches", "regions"):
+              if key in data:
+                  item = data[key]
+                  lines.append(f"| {key} | {item['covered']} | {item['count']} | {item['percent']:.2f}% |")
+          print("\n".join(lines))
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as out:
+              out.write("\n".join(lines) + "\n")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: photocraft-format-llvm-coverage
+          path: |
+            coverage-format.json
+            coverage-format.lcov
+          if-no-files-found: error
+          retention-days: 30
