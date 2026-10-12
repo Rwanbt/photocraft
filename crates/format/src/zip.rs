@@ -147,7 +147,10 @@ impl<'a> ZipReader<'a> {
         let min = bytes.len().saturating_sub(22 + 65535);
         let eocd = (min..=bytes.len() - 22)
             .rev()
-            .find(|&i| u32_at(bytes, i).ok() == Some(EOCD_SIG))
+            .find(|&i| {
+                u32_at(bytes, i).ok() == Some(EOCD_SIG)
+                    && u16_at(bytes, i + 20).is_ok_and(|comment_len| bytes.len() - i - 22 == comment_len as usize)
+            })
             .ok_or_else(|| FormatError::corrupt("zip end-of-central-directory not found"))?;
         let count = u16_at(bytes, eocd + 10)? as usize;
         let cd_size = u32_at(bytes, eocd + 12)? as usize;
@@ -412,5 +415,37 @@ mod tests {
         let bytes = writer.finish().unwrap();
         let archive = ZipReader::new(&bytes).unwrap();
         assert_eq!(archive.read_by_name("zero", 0).unwrap(), b"");
+    }
+
+    #[test]
+    fn zip_comment_containing_eocd_magic_does_not_mask_the_real_directory() {
+        let mut writer = ZipWriter::new();
+        writer.add("manifest.json", b"valid").unwrap();
+        let mut bytes = writer.finish().unwrap();
+        let eocd = bytes.len() - 22;
+        let comment = b"visible-comment-PK\x05\x06-not-an-end-of-central-directory";
+        bytes[eocd + 20..eocd + 22].copy_from_slice(&(comment.len() as u16).to_le_bytes());
+        bytes.extend_from_slice(comment);
+        let archive = ZipReader::new(&bytes).unwrap();
+        assert_eq!(archive.read_by_name("manifest.json", 5).unwrap(), b"valid");
+    }
+
+    #[test]
+    fn truncated_zip_comments_and_false_comment_lengths_are_rejected() {
+        let mut writer = ZipWriter::new();
+        writer.add("manifest.json", b"valid").unwrap();
+        let mut bytes = writer.finish().unwrap();
+        let eocd = bytes.len() - 22;
+        bytes[eocd + 20..eocd + 22].copy_from_slice(&4u16.to_le_bytes());
+        bytes.extend_from_slice(b"note");
+        assert!(ZipReader::new(&bytes).is_ok());
+
+        let mut truncated = bytes.clone();
+        truncated.pop();
+        assert!(matches!(ZipReader::new(&truncated), Err(FormatError::Corrupt(_))));
+
+        let mut forged = bytes;
+        forged[eocd + 20..eocd + 22].copy_from_slice(&5u16.to_le_bytes());
+        assert!(matches!(ZipReader::new(&forged), Err(FormatError::Corrupt(_))));
     }
 }

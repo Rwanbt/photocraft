@@ -41,7 +41,7 @@ jobs:
         run: cargo clippy -p photocraft-format --all-targets --locked -- -D warnings
       - name: LLVM coverage for native format library
         run: |
-          cargo llvm-cov -p photocraft-format --lib --locked --json --output-path coverage-format.json
+          cargo llvm-cov -p photocraft-format --lib --tests --locked --json --output-path coverage-format.json
           cargo llvm-cov report --lcov --output-path coverage-format.lcov
       - name: Record actual coverage totals
         run: |
@@ -51,7 +51,7 @@ jobs:
           from pathlib import Path
 
           data = json.loads(Path("coverage-format.json").read_text(encoding="utf-8"))["data"][0]["totals"]
-          lines = ["### PhotoCraft native format (LLVM)", "", "| Metric | Covered | Total | Percent |", "| --- | ---: | ---: | ---: |"]
+          lines = ["### PhotoCraft native format: library + integration tests (LLVM)", "", "| Metric | Covered | Total | Percent |", "| --- | ---: | ---: | ---: |"]
           for key in ("lines", "functions", "branches", "regions"):
               if key in data:
                   item = data[key]
