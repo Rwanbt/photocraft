@@ -352,5 +352,4 @@ mod tests {
         assert_eq!(archive.entries.len(), 1);
         assert_eq!(archive.read_by_name(&name, 2).unwrap(), b"ok");
     }
-
 }

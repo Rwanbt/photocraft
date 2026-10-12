@@ -1,0 +1,40 @@
+name: Native format integrity
+
+on:
+  pull_request:
+    paths:
+      - "crates/format/**"
+      - ".github/workflows/format-tests.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: format-integrity-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  format-tests:
+    name: ZIP and project persistence tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: format-integrity
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Rustfmt
+        run: cargo fmt --all -- --check
+      - name: Rust unit tests
+        run: cargo test -p photocraft-format --locked --lib
+      - name: Rust integration tests
+        run: cargo test -p photocraft-format --locked --tests
+      - name: Clippy
+        run: cargo clippy -p photocraft-format --all-targets --locked -- -D warnings
