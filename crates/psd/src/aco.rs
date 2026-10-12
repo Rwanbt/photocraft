@@ -14,7 +14,7 @@
 //! read → write round trip never loses it. Converting colours is the caller's job.
 
 use crate::error::{PsdError, Result};
-use crate::io::{Reader, WriteExt};
+use crate::io::{Reader, WriteExt, utf16_prefix};
 
 /// Most swatches in one file (the counts are 16-bit).
 pub const MAX_SWATCHES: usize = u16::MAX as usize;
@@ -181,7 +181,7 @@ pub fn write(swatches: &[AcoSwatch]) -> Result<Vec<u8>> {
                 out.put_u16(x);
             }
             if version == 2 {
-                let units: Vec<u16> = s.name.encode_utf16().take(MAX_NAME_UNITS).collect();
+                let units = utf16_prefix(&s.name, MAX_NAME_UNITS);
                 // The length counts the terminating null.
                 out.put_u32(units.len() as u32 + 1);
                 for u in units {

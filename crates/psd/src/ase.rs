@@ -16,7 +16,7 @@
 //! (colour models) or skipped (block types). Converting colours is the caller's job.
 
 use crate::error::{PsdError, Result};
-use crate::io::{Reader, WriteExt};
+use crate::io::{Reader, WriteExt, utf16_prefix};
 
 /// File signature.
 pub const SIGNATURE: &[u8; 4] = b"ASEF";
@@ -226,7 +226,7 @@ pub fn parse(data: &[u8]) -> Result<AseFile> {
 }
 
 fn put_name(out: &mut Vec<u8>, name: &str) {
-    let units: Vec<u16> = name.encode_utf16().take(MAX_NAME_UNITS).collect();
+    let units = utf16_prefix(name, MAX_NAME_UNITS);
     out.put_u16(units.len() as u16 + 1);
     for u in units {
         out.put_u16(u);
