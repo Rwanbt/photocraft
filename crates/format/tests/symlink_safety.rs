@@ -133,7 +133,6 @@ fn loader_rejects_symlinked_tiles_directory_even_with_valid_objects() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
-
 #[test]
 fn orphan_blob_symlink_is_rejected_before_garbage_collection() {
     let doc = sample_doc();
