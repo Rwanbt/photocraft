@@ -334,5 +334,4 @@ mod tests {
         assert!(Affine::scale(1e300).inverse().is_none());
         assert!(Affine { m: [1.0, 0.0, 0.0, 1.0, f64::INFINITY, 0.0] }.inverse().is_none());
     }
-
 }

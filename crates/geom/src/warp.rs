@@ -1231,5 +1231,4 @@ mod tests {
             assert!(StyleWarp::new(WarpStyle::Arc, 50.0, 0.0, 0.0, false, bad).is_none());
         }
     }
-
 }
