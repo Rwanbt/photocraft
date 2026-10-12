@@ -80,7 +80,25 @@ pub(crate) struct DirSource {
 
 impl Source for DirSource {
     fn get(&self, path: &str, max: usize) -> Result<Vec<u8>> {
-        let p = self.root.join(path);
+        // The bundle root is user-selected; paths *inside* the bundle are
+        // untrusted and must never escape it via symlinks or traversal.
+        let mut p = self.root.clone();
+        for component in Path::new(path).components() {
+            let std::path::Component::Normal(name) = component else {
+                return Err(FormatError::corrupt(format!("invalid directory bundle path `{path}`")));
+            };
+            p.push(name);
+            match std::fs::symlink_metadata(&p) {
+                Ok(meta) if meta.file_type().is_symlink() => {
+                    return Err(FormatError::Unsupported(format!("directory bundle contains a symbolic link: {}", p.display())));
+                }
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    return Err(FormatError::corrupt(format!("missing `{path}`")));
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
         let len = std::fs::metadata(&p).map_err(|_| FormatError::corrupt(format!("missing `{path}`")))?.len();
         if len > max as u64 {
             return Err(FormatError::LimitExceeded(format!("`{path}` is {len} bytes (max {max})")));
