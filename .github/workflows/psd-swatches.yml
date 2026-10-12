@@ -18,21 +18,53 @@ jobs:
   swatch-fidelity:
     name: ACO and ASE Unicode boundary tests
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
+          components: rustfmt, clippy, llvm-tools-preview
       - uses: Swatinem/rust-cache@v2
         with:
           key: psd-swatches
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: taiki-e/install-action@cargo-llvm-cov
       - name: Rustfmt
         run: cargo fmt --all -- --check
       - name: ACO Unicode cases
         run: cargo test -p photocraft-psd --locked --lib aco::tests
       - name: ASE Unicode cases
         run: cargo test -p photocraft-psd --locked --lib ase::tests
+      - name: Full PSD library and integration suite
+        run: cargo test -p photocraft-psd --locked --lib --tests
       - name: Clippy
         run: cargo clippy -p photocraft-psd --all-targets --locked -- -D warnings
+      - name: Measure complete PSD crate coverage
+        run: |
+          cargo llvm-cov -p photocraft-psd --lib --tests --locked --json --output-path coverage-psd.json
+          cargo llvm-cov report --lcov --output-path coverage-psd.lcov
+      - name: Show measured coverage
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          totals = json.loads(Path("coverage-psd.json").read_text(encoding="utf-8"))["data"][0]["totals"]
+          lines = ["### PSD library + integration LLVM coverage", "", "| Metric | Covered | Total | Percent |", "| --- | ---: | ---: | ---: |"]
+          for metric in ("lines", "functions", "branches", "regions"):
+              if metric in totals:
+                  entry = totals[metric]
+                  lines.append(f"| {metric} | {entry['covered']} | {entry['count']} | {entry['percent']:.2f}% |")
+          print("\n".join(lines))
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as out:
+              out.write("\n".join(lines) + "\n")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: photocraft-psd-llvm-coverage
+          path: |
+            coverage-psd.json
+            coverage-psd.lcov
+          if-no-files-found: error
+          retention-days: 30
