@@ -7,3 +7,12 @@ Git-tree inventory: 25 Rust crates, 3 app manifests and xtask; 1,109 Rust files,
 First LLVM baseline: [geometry run 38267483131](https://github.com/Rwanbt/photocraft/actions/runs/38267483131), SHA `0ca14ce6860d4b72dcf94554a4a3146b6f9f42bf`. **23 geometry library tests passed, none failed**. JSON and LCOV coverage reports were uploaded to artifact `photocraft-geom-llvm-coverage` (ID 11755745928). The exact percentages belong to the artifact and the run summary, not to this file-count inventory. Full-workspace coverage and full test collection remain **unmeasured**.
 
 The `Geometry coverage` workflow runs `cargo llvm-cov -p photocraft-geom --lib --locked --json --output-path coverage.json` followed by `cargo llvm-cov report --lcov --output-path coverage.lcov`. Expand to per-crate/feature/OS baselines and exclude only justified untestable code. Do not enforce a 100% gate without an instrumented baseline.
+
+
+## Latest measured geometry improvement (same PR)
+
+- [Geometry coverage run 38269937343](https://github.com/Rwanbt/photocraft/actions/runs/38269937343), SHA `8554c62aec25f7da2d7884b07b2a0e57c9197ebc`: **29 passed, zero failed**.
+- LLVM: **1,056/1,098 covered lines (96.17%)**; **155/155 functions (100%)**; **2,790/2,907 regions (95.98%)**.
+- The LLVM JSON reports zero instrumented branches: **branch coverage is not measured**, not a validated 0% result.
+- The figures cover only `photocraft-geom`, under `--lib` instrumentation; they are not evidence for the remaining crates or full application workflows.
+- PR #1 has the `full-ci` label to request Windows in addition to Linux on the next pull-request CI run. macOS validation remains separate.
