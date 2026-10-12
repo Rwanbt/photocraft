@@ -80,7 +80,25 @@ pub(crate) struct DirSource {
 
 impl Source for DirSource {
     fn get(&self, path: &str, max: usize) -> Result<Vec<u8>> {
-        let p = self.root.join(path);
+        // The bundle root is user-selected; paths *inside* the bundle are
+        // untrusted and must never escape it via symlinks or traversal.
+        let mut p = self.root.clone();
+        for component in Path::new(path).components() {
+            let std::path::Component::Normal(name) = component else {
+                return Err(FormatError::corrupt(format!("invalid directory bundle path `{path}`")));
+            };
+            p.push(name);
+            match std::fs::symlink_metadata(&p) {
+                Ok(meta) if meta.file_type().is_symlink() => {
+                    return Err(FormatError::Unsupported(format!("directory bundle contains a symbolic link: {}", p.display())));
+                }
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    return Err(FormatError::corrupt(format!("missing `{path}`")));
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
         let len = std::fs::metadata(&p).map_err(|_| FormatError::corrupt(format!("missing `{path}`")))?.len();
         if len > max as u64 {
             return Err(FormatError::LimitExceeded(format!("`{path}` is {len} bytes (max {max})")));
@@ -580,6 +598,10 @@ impl PcraftWriter {
     pub fn save_dir(&mut self, doc: &Document, dir: &Path, opts: &SaveOptions) -> Result<SaveStats> {
         let p = self.prepare(doc, opts)?;
         let mut stats = p.stats;
+        std::fs::create_dir_all(dir)?;
+        // A user-supplied directory bundle may contain malicious links left by an
+        // external tool. Never follow internal links into unrelated filesystem paths.
+        reject_bundle_symlinks(dir)?;
         for sub in ["tiles", "blobs", "composite"] {
             std::fs::create_dir_all(dir.join(sub))?;
         }
@@ -698,6 +720,25 @@ impl PcraftWriter {
     }
 }
 
+/// Refuse pre-existing internal symlinks before creating or replacing project objects.
+/// The caller-selected root may itself be a symlink, but its reserved children may not
+/// redirect writes or removals elsewhere. Concurrent path replacement still requires
+/// directory-handle-based I/O; this check covers persistent malformed bundles.
+fn reject_bundle_symlinks(dir: &Path) -> Result<()> {
+    for name in ["tiles", "blobs", "composite", MANIFEST, THUMB, COMPOSITE] {
+        let path = dir.join(name);
+        match std::fs::symlink_metadata(&path) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                return Err(FormatError::Unsupported(format!("directory bundle contains a symbolic link: {}", path.display())));
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(())
+}
+
 fn list_objects(dir: &Path) -> Result<HashSet<String>> {
     let mut out = HashSet::new();
     for sub in ["tiles", "blobs"] {
@@ -706,6 +747,11 @@ fn list_objects(dir: &Path) -> Result<HashSet<String>> {
             let e = e?;
             let name = e.file_name().to_string_lossy().into_owned();
             if name.ends_with(".zst") {
+                // Atomic writes deliberately resolve a symlink for user-selected
+                // output files. Bundle objects, however, are untrusted internal paths.
+                if e.file_type()?.is_symlink() {
+                    return Err(FormatError::Unsupported(format!("directory bundle contains a symbolic link: {}", e.path().display())));
+                }
                 out.insert(format!("{sub}/{name}"));
             }
         }
