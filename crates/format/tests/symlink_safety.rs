@@ -24,7 +24,6 @@ fn assert_loader_refused(bundle: &std::path::Path) {
     }
 }
 
-
 #[test]
 fn directory_component_symlinks_never_redirect_bundle_saves() {
     let doc = sample_doc();
