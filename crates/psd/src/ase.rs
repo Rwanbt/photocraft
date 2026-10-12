@@ -146,6 +146,11 @@ fn read_name(r: &mut Reader<'_>) -> Result<String> {
     while units.last() == Some(&0) {
         units.pop();
     }
+    // An over-limit external name may be cut just after a high surrogate.
+    // Discard that incomplete character rather than creating U+FFFD.
+    if n > MAX_NAME_UNITS && units.last().is_some_and(|u| (0xD800..=0xDBFF).contains(u)) {
+        units.pop();
+    }
     Ok(String::from_utf16_lossy(&units))
 }
 
@@ -435,5 +440,21 @@ mod tests {
         let file = AseFile { entries: vec![AseEntry::Group { name: name.clone(), swatches: vec![swatch] }] };
         let reopened = parse(&write(&file).unwrap()).unwrap();
         assert_eq!(reopened, file);
+    }
+
+    #[test]
+    fn externally_encoded_overlong_ase_group_name_does_not_split_surrogate_on_read() {
+        let prefix = "a".repeat(MAX_NAME_UNITS - 1);
+        let utf16: Vec<u16> = format!("{prefix}😀").encode_utf16().chain(std::iter::once(0)).collect();
+        let mut body = (utf16.len() as u16).to_be_bytes().to_vec();
+        for unit in utf16 {
+            body.extend_from_slice(&unit.to_be_bytes());
+        }
+        let mut bytes = b"ASEF\0\x01\0\0\0\0\0\x01".to_vec();
+        bytes.extend_from_slice(&GROUP_START.to_be_bytes());
+        bytes.extend_from_slice(&(body.len() as u32).to_be_bytes());
+        bytes.extend_from_slice(&body);
+        let reopened = parse(&bytes).unwrap();
+        assert_eq!(reopened.entries, vec![AseEntry::Group { name: prefix, swatches: Vec::new() }]);
     }
 }
