@@ -296,4 +296,23 @@ mod tests {
         let f = parse(&write(&[long]).unwrap()).unwrap();
         assert_eq!(f.swatches[0].name.len(), MAX_NAME_UNITS);
     }
+
+    #[test]
+    fn truncated_utf16_swatch_name_never_replaces_a_split_surrogate() {
+        let prefix = "a".repeat(MAX_NAME_UNITS - 1);
+        let too_long = format!("{prefix}😀suffix");
+        let swatch = AcoSwatch { name: too_long, color: AcoColor::Gray(5000) };
+        let saved = write(&[swatch]).unwrap();
+        let reopened = parse(&saved).unwrap();
+        assert_eq!(reopened.swatches[0].name, prefix);
+        assert!(!reopened.swatches[0].name.contains('�'));
+    }
+
+    #[test]
+    fn maximum_fit_utf16_swatch_name_preserves_complete_non_bmp_character() {
+        let name = format!("{}😀", "a".repeat(MAX_NAME_UNITS - 2));
+        let swatch = AcoSwatch { name: name.clone(), color: AcoColor::Gray(0) };
+        let reopened = parse(&write(&[swatch]).unwrap()).unwrap();
+        assert_eq!(reopened.swatches[0].name, name);
+    }
 }

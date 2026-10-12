@@ -1,0 +1,38 @@
+name: PSD swatch UTF-16 fidelity
+
+on:
+  pull_request:
+    paths:
+      - "crates/psd/**"
+      - ".github/workflows/psd-swatches.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: psd-swatch-utf16-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  swatch-fidelity:
+    name: ACO and ASE Unicode boundary tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: psd-swatches
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Rustfmt
+        run: cargo fmt --all -- --check
+      - name: ACO Unicode cases
+        run: cargo test -p photocraft-psd --locked --lib aco::tests
+      - name: ASE Unicode cases
+        run: cargo test -p photocraft-psd --locked --lib ase::tests
+      - name: Clippy
+        run: cargo clippy -p photocraft-psd --all-targets --locked -- -D warnings

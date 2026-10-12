@@ -412,4 +412,28 @@ mod tests {
         let f = AseFile { entries: vec![AseEntry::Group { name: "g".into(), swatches: vec![s; MAX_SWATCHES + 1] }] };
         assert!(write(&f).is_err());
     }
+
+    #[test]
+    fn truncated_utf16_group_and_swatch_names_never_split_surrogate_pairs() {
+        let prefix = "a".repeat(MAX_NAME_UNITS - 1);
+        let too_long = format!("{prefix}😀suffix");
+        let swatch = AseSwatch { name: too_long.clone(), color: AseColor::Gray(0.5), kind: AseKind::Process };
+        let file = AseFile { entries: vec![AseEntry::Group { name: too_long, swatches: vec![swatch] }] };
+        let reopened = parse(&write(&file).unwrap()).unwrap();
+        let AseEntry::Group { name, swatches } = &reopened.entries[0] else {
+            panic!("expected group");
+        };
+        assert_eq!(name, &prefix);
+        assert_eq!(swatches[0].name, prefix);
+        assert!(!name.contains('�'));
+    }
+
+    #[test]
+    fn maximum_fit_utf16_group_and_swatch_names_preserve_non_bmp_character() {
+        let name = format!("{}😀", "a".repeat(MAX_NAME_UNITS - 2));
+        let swatch = AseSwatch { name: name.clone(), color: AseColor::Gray(0.5), kind: AseKind::Process };
+        let file = AseFile { entries: vec![AseEntry::Group { name: name.clone(), swatches: vec![swatch] }] };
+        let reopened = parse(&write(&file).unwrap()).unwrap();
+        assert_eq!(reopened, file);
+    }
 }
