@@ -257,6 +257,8 @@ jobs:
           - { crate: psd, name: parse }
           - { crate: psd, name: descriptor }
           - { crate: psd, name: image_source_data }
+          - { crate: psd, name: aco }
+          - { crate: psd, name: ase }
           - { crate: codecs, name: decode_any }
           - { crate: codecs, name: decode_png }
           - { crate: codecs, name: decode_jpeg }
