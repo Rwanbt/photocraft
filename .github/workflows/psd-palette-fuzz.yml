@@ -1,0 +1,73 @@
+name: PSD palette fuzz replay
+
+on:
+  pull_request:
+    paths:
+      - "crates/psd/fuzz/**"
+      - ".github/workflows/psd-palette-fuzz.yml"
+      - ".github/workflows/ci.yml"
+  workflow_dispatch:
+  schedule:
+    - cron: "19 3 * * 6"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: psd-palette-fuzz-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  replay:
+    name: Fuzz swatch parser (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        target: [aco, ase]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/psd/fuzz
+          key: swatch-fuzz
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+      - name: Seed each parser with a valid deterministic swatch
+        working-directory: crates/psd
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          from struct import pack
+
+          aco = Path("fuzz/corpus/aco")
+          aco.mkdir(parents=True, exist_ok=True)
+          aco.joinpath("one-red.aco").write_bytes(
+              pack(">HHH4H", 2, 1, 0, 65535, 0, 0, 0)
+              + pack(">IHH", 2, ord("R"), 0)
+          )
+
+          name = pack(">HHH", 2, ord("R"), 0)
+          body = name + b"RGB " + pack(">fffH", 1.0, 0.0, 0.0, 2)
+          ase = Path("fuzz/corpus/ase")
+          ase.mkdir(parents=True, exist_ok=True)
+          ase.joinpath("one-red.ase").write_bytes(
+              b"ASEF" + pack(">HHI", 1, 0, 1)
+              + pack(">HI", 1, len(body)) + body
+          )
+          PY
+      - name: Seeded bounded fuzz campaign
+        working-directory: crates/psd
+        run: |
+          cargo fuzz run ${{ matrix.target }} -- -runs=2000 -seed=20261012 -max_len=4096 -timeout=20
+      - name: Upload crash reproductions
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: swatch-fuzz-crashes-${{ matrix.target }}
+          path: crates/psd/fuzz/artifacts/${{ matrix.target }}/
+          if-no-files-found: ignore

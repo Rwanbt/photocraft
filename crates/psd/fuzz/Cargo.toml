@@ -42,3 +42,17 @@ path = "fuzz_targets/image_source_data.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "aco"
+path = "fuzz_targets/aco.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ase"
+path = "fuzz_targets/ase.rs"
+test = false
+doc = false
+bench = false
