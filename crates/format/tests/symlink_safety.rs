@@ -132,3 +132,26 @@ fn loader_rejects_symlinked_tiles_directory_even_with_valid_objects() {
     assert_loader_refused(&bundle);
     std::fs::remove_dir_all(root).unwrap();
 }
+
+
+#[test]
+fn orphan_blob_symlink_is_rejected_before_garbage_collection() {
+    let doc = sample_doc();
+    let root = temp_dir("orphan-blob-link");
+    let bundle = root.join("bundle");
+    PcraftWriter::new().save_dir(&doc, &bundle, &SaveOptions::default()).unwrap();
+
+    // An unreferenced object is still dangerous: scanning the bundle before
+    // garbage collection must not follow or delete a linked external file.
+    let outside = root.join("external-original.bin");
+    let original = b"external file must never be modified or removed";
+    std::fs::write(&outside, original).unwrap();
+    let linked_blob = bundle.join("blobs").join(format!("{}.zst", "a".repeat(64)));
+    symlink(&outside, &linked_blob).unwrap();
+
+    let result = PcraftWriter::new().save_dir(&doc, &bundle, &SaveOptions::default());
+    assert_refused(result.expect_err("orphan blob symlink must not be accepted"));
+    assert_eq!(std::fs::read(&outside).unwrap(), original);
+    assert!(std::fs::symlink_metadata(&linked_blob).unwrap().file_type().is_symlink());
+    std::fs::remove_dir_all(root).unwrap();
+}
