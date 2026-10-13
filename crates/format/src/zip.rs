@@ -194,10 +194,7 @@ impl<'a> ZipReader<'a> {
             // The central and local headers must describe the same file.
             // Otherwise different ZIP readers can disagree about its name or
             // compression method, permitting ambiguous project contents.
-            let local_header_end = local
-                .checked_add(30)
-                .filter(|end| *end <= cd_off)
-                .ok_or_else(|| FormatError::corrupt("zip local header out of range"))?;
+            let local_header_end = local.checked_add(30).filter(|end| *end <= cd_off).ok_or_else(|| FormatError::corrupt("zip local header out of range"))?;
             if u32_at(bytes, local)? != LOCAL_SIG {
                 return Err(FormatError::corrupt("bad zip local header"));
             }
@@ -216,17 +213,13 @@ impl<'a> ZipReader<'a> {
             }
             let lnlen = u16_at(bytes, local + 26)? as usize;
             let lelen = u16_at(bytes, local + 28)? as usize;
-            let local_name_end = local_header_end
-                .checked_add(lnlen)
-                .filter(|end| *end <= cd_off)
-                .ok_or_else(|| FormatError::corrupt("zip local filename out of range"))?;
+            let local_name_end =
+                local_header_end.checked_add(lnlen).filter(|end| *end <= cd_off).ok_or_else(|| FormatError::corrupt("zip local filename out of range"))?;
             if bytes.get(local_header_end..local_name_end) != Some(name_bytes) {
                 return Err(FormatError::corrupt(format!("zip entry `{name}` has mismatched local filename")));
             }
-            let data_offset = local_name_end
-                .checked_add(lelen)
-                .filter(|end| *end <= cd_off)
-                .ok_or_else(|| FormatError::corrupt("zip local extra field out of range"))?;
+            let data_offset =
+                local_name_end.checked_add(lelen).filter(|end| *end <= cd_off).ok_or_else(|| FormatError::corrupt("zip local extra field out of range"))?;
             if data_offset.checked_add(compressed).is_none_or(|end| end > cd_off) {
                 return Err(FormatError::corrupt(format!("zip entry `{name}` out of range")));
             }
