@@ -41,10 +41,18 @@ struct Faulty {
     /// Fail the first N renames with PermissionDenied (a transient lock), then succeed.
     locked_renames: Cell<u32>,
     renames: Cell<u32>,
+    /// Simulate name collisions when creating adjacent temporary files.
+    colliding_writes: Cell<u32>,
+    fail_sync_dir: bool,
+    fail_copy_permissions: bool,
 }
 
 impl AtomicFs for Faulty {
     fn write_new(&self, tmp: &Path, bytes: &[u8]) -> io::Result<()> {
+        if self.colliding_writes.get() > 0 {
+            self.colliding_writes.set(self.colliding_writes.get() - 1);
+            return Err(io::Error::new(io::ErrorKind::AlreadyExists, "injected temp collision"));
+        }
         if let Some(n) = self.fail_write_after {
             let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(tmp)?;
             f.write_all(&bytes[..n.min(bytes.len())])?;
@@ -67,9 +75,15 @@ impl AtomicFs for Faulty {
         RealFs.remove(path)
     }
     fn sync_dir(&self, dir: &Path) -> io::Result<()> {
+        if self.fail_sync_dir {
+            return Err(io::Error::other("injected directory flush failure"));
+        }
         RealFs.sync_dir(dir)
     }
     fn copy_permissions(&self, from: &Path, to: &Path) -> io::Result<()> {
+        if self.fail_copy_permissions {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied, "injected permissions copy failure"));
+        }
         RealFs.copy_permissions(from, to)
     }
 }
@@ -246,4 +260,58 @@ fn sync_file_flushes_a_local_file() {
     // Opened for writing, as the saves do: Windows can't flush a read-only handle.
     let file = std::fs::OpenOptions::new().write(true).create_new(true).open(&path).unwrap();
     sync_file(&file).unwrap();
+}
+
+#[test]
+fn a_post_rename_directory_flush_error_does_not_report_a_false_save_failure() {
+    let dir = TempDir::new("dir-sync");
+    let file = dir.0.join("document.pcraft");
+    std::fs::write(&file, ORIGINAL).unwrap();
+    let fs = Faulty { fail_sync_dir: true, ..Default::default() };
+
+    atomic_write_with(&fs, NO_RETRY, &file, b"committed bytes").unwrap();
+    assert_eq!(std::fs::read(&file).unwrap(), b"committed bytes");
+    assert_eq!(fs.renames.get(), 1);
+    assert_no_temp(&dir.0);
+}
+
+#[test]
+fn a_failed_permission_copy_does_not_prevent_a_valid_save() {
+    let dir = TempDir::new("permissions");
+    let file = dir.0.join("document.pcraft");
+    std::fs::write(&file, ORIGINAL).unwrap();
+    let fs = Faulty { fail_copy_permissions: true, ..Default::default() };
+
+    atomic_write_with(&fs, NO_RETRY, &file, b"new data").unwrap();
+    assert_eq!(std::fs::read(&file).unwrap(), b"new data");
+    assert_eq!(fs.renames.get(), 1);
+    assert_no_temp(&dir.0);
+}
+
+#[test]
+fn eight_temp_name_collisions_fail_safely_without_touching_original() {
+    let dir = TempDir::new("collisions");
+    let file = dir.0.join("document.pcraft");
+    std::fs::write(&file, ORIGINAL).unwrap();
+    let fs = Faulty { colliding_writes: Cell::new(8), ..Default::default() };
+
+    let failure = atomic_write_with(&fs, NO_RETRY, &file, b"new data").unwrap_err();
+    assert_eq!(failure.kind(), io::ErrorKind::AlreadyExists);
+    assert_eq!(fs.colliding_writes.get(), 0);
+    assert_eq!(fs.renames.get(), 0);
+    assert_eq!(std::fs::read(&file).unwrap(), ORIGINAL);
+    assert_no_temp(&dir.0);
+}
+
+#[test]
+fn a_partial_initial_save_leaves_no_document_or_temp_file() {
+    let dir = TempDir::new("first-write-full-disk");
+    let file = dir.0.join("new-document.pcraft");
+    let fs = Faulty { fail_write_after: Some(3), ..Default::default() };
+
+    let failure = atomic_write_with(&fs, NO_RETRY, &file, b"a longer new document").unwrap_err();
+    assert_eq!(failure.kind(), io::ErrorKind::StorageFull);
+    assert!(!file.exists());
+    assert_eq!(fs.renames.get(), 0);
+    assert_no_temp(&dir.0);
 }
