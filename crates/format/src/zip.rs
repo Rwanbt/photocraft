@@ -427,7 +427,6 @@ mod tests {
         assert_eq!(archive.read_by_name("manifest.json", 5).unwrap(), b"valid");
     }
 
-
     #[test]
     fn mismatched_local_and_central_names_are_rejected() {
         let mut writer = ZipWriter::new();
