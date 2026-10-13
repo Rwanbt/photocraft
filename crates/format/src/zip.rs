@@ -427,6 +427,45 @@ mod tests {
         assert_eq!(archive.read_by_name("manifest.json", 5).unwrap(), b"valid");
     }
 
+
+    #[test]
+    fn mismatched_local_and_central_names_are_rejected() {
+        let mut writer = ZipWriter::new();
+        writer.add("manifest.json", b"valid").unwrap();
+        let mut archive = writer.finish().unwrap();
+        // The central directory retains "manifest.json", but the local header
+        // points at a different same-length filename.
+        archive[30..43].copy_from_slice(b"malifest.json");
+        assert!(matches!(ZipReader::new(&archive), Err(FormatError::Corrupt(_))));
+    }
+
+    #[test]
+    fn mismatched_local_and_central_compression_are_rejected() {
+        let mut writer = ZipWriter::new();
+        writer.add("manifest.json", b"valid").unwrap();
+        let mut archive = writer.finish().unwrap();
+        archive[8..10].copy_from_slice(&8u16.to_le_bytes());
+        assert!(matches!(ZipReader::new(&archive), Err(FormatError::Corrupt(_))));
+    }
+
+    #[test]
+    fn encrypted_local_header_is_rejected_even_if_central_header_is_clear() {
+        let mut writer = ZipWriter::new();
+        writer.add("manifest.json", b"valid").unwrap();
+        let mut archive = writer.finish().unwrap();
+        archive[6..8].copy_from_slice(&0x0801u16.to_le_bytes());
+        assert!(ZipReader::new(&archive).is_err());
+    }
+
+    #[test]
+    fn duplicate_entry_names_must_not_make_zip_lookup_ambiguous() {
+        let mut writer = ZipWriter::new();
+        writer.add("manifest.json", b"first").unwrap();
+        assert!(writer.add("manifest.json", b"second").is_err());
+        let archive = writer.finish().unwrap();
+        assert_eq!(ZipReader::new(&archive).unwrap().entries.len(), 1);
+    }
+
     #[test]
     fn truncated_zip_comments_and_false_comment_lengths_are_rejected() {
         let mut writer = ZipWriter::new();
