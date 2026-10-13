@@ -422,6 +422,8 @@ mod tests {
         assert!(matches!(ZipReader::new(&encrypted), Err(FormatError::Unsupported(_))));
 
         let mut unsupported = valid;
+        // Both headers must agree even when the compression is unsupported.
+        unsupported[8..10].copy_from_slice(&99u16.to_le_bytes());
         unsupported[central + 10..central + 12].copy_from_slice(&99u16.to_le_bytes());
         let archive = ZipReader::new(&unsupported).unwrap();
         assert!(matches!(archive.read_by_name("manifest.json", 4), Err(FormatError::Unsupported(_))));
