@@ -3,6 +3,7 @@
 //! unzipped and re-zipped by another tool still loads). No ZIP64, no
 //! encryption, no multi-disk archives.
 
+use std::collections::HashSet;
 use std::io::Read;
 
 use crate::FormatError;
@@ -37,6 +38,7 @@ pub struct ZipWriter {
     out: Vec<u8>,
     central: Vec<u8>,
     count: u16,
+    names: HashSet<String>,
 }
 
 impl Default for ZipWriter {
@@ -47,7 +49,7 @@ impl Default for ZipWriter {
 
 impl ZipWriter {
     pub fn new() -> Self {
-        ZipWriter { out: Vec::new(), central: Vec::new(), count: 0 }
+        ZipWriter { out: Vec::new(), central: Vec::new(), count: 0, names: HashSet::new() }
     }
 
     pub fn add(&mut self, name: &str, data: &[u8]) -> Result<(), FormatError> {
@@ -56,6 +58,9 @@ impl ZipWriter {
         }
         // The ZIP local and central headers encode the UTF-8 filename length as u16.
         // Validate before writing either header; a cast would truncate and corrupt the archive.
+        if self.names.contains(name) {
+            return Err(FormatError::Unsupported(format!("duplicate zip entry name `{name}`")));
+        }
         let name_b = name.as_bytes();
         let name_len = u16::try_from(name_b.len()).map_err(|_| FormatError::Unsupported("zip entry filename exceeds 65535 UTF-8 bytes".into()))?;
         let size = u32::try_from(data.len()).map_err(|_| FormatError::Unsupported("zip entry over 4 GiB".into()))?;
@@ -94,6 +99,7 @@ impl ZipWriter {
         c.extend_from_slice(&offset.to_le_bytes());
         c.extend_from_slice(name_b);
         self.count += 1;
+        self.names.insert(name.to_owned());
         Ok(())
     }
 
@@ -154,6 +160,7 @@ impl<'a> ZipReader<'a> {
         let cd_off = u32_at(bytes, eocd + 16)? as usize;
         let cd_end = cd_off.checked_add(cd_size).filter(|end| *end <= eocd).ok_or_else(|| FormatError::corrupt("zip central directory out of range"))?;
         let mut entries = Vec::with_capacity(count.min(bytes.len() / 46));
+        let mut seen = HashSet::with_capacity(count.min(bytes.len() / 46));
         let mut p = cd_off;
         for _ in 0..count {
             let header_end = p.checked_add(46).filter(|end| *end <= cd_end).ok_or_else(|| FormatError::corrupt("truncated zip central directory entry"))?;
@@ -170,8 +177,11 @@ impl<'a> ZipReader<'a> {
             let clen = u16_at(bytes, p + 32)? as usize;
             let local = u32_at(bytes, p + 42)? as usize;
             let name_end = header_end.checked_add(nlen).filter(|end| *end <= cd_end).ok_or_else(|| FormatError::corrupt("zip entry name out of range"))?;
-            let name = bytes.get(header_end..name_end).ok_or_else(|| FormatError::corrupt("truncated zip name"))?;
-            let name = String::from_utf8_lossy(name).into_owned();
+            let name_bytes = bytes.get(header_end..name_end).ok_or_else(|| FormatError::corrupt("truncated zip name"))?;
+            let name = String::from_utf8_lossy(name_bytes).into_owned();
+            if !seen.insert(name.clone()) {
+                return Err(FormatError::corrupt(format!("duplicate zip entry `{name}`")));
+            }
             if flags & 1 != 0 {
                 return Err(FormatError::Unsupported("encrypted zip entries".into()));
             }
@@ -181,20 +191,43 @@ impl<'a> ZipReader<'a> {
                 .and_then(|end| end.checked_add(clen))
                 .filter(|end| *end <= cd_end)
                 .ok_or_else(|| FormatError::corrupt("zip central directory entry out of range"))?;
-            // Local header gives the real data offset.
+            // The central and local headers must describe the same file.
+            // Otherwise different ZIP readers can disagree about its name or
+            // compression method, permitting ambiguous project contents.
+            let local_header_end = local
+                .checked_add(30)
+                .filter(|end| *end <= cd_off)
+                .ok_or_else(|| FormatError::corrupt("zip local header out of range"))?;
             if u32_at(bytes, local)? != LOCAL_SIG {
                 return Err(FormatError::corrupt("bad zip local header"));
             }
-            let local_name_len = local.checked_add(26).ok_or_else(|| FormatError::corrupt("zip local header offset overflow"))?;
-            let local_extra_len = local.checked_add(28).ok_or_else(|| FormatError::corrupt("zip local header offset overflow"))?;
-            let lnlen = u16_at(bytes, local_name_len)? as usize;
-            let lelen = u16_at(bytes, local_extra_len)? as usize;
-            let data_offset = local
-                .checked_add(30)
-                .and_then(|offset| offset.checked_add(lnlen))
-                .and_then(|offset| offset.checked_add(lelen))
-                .ok_or_else(|| FormatError::corrupt("zip data offset overflow"))?;
-            if data_offset.checked_add(compressed).is_none_or(|end| end > bytes.len()) {
+            if u16_at(bytes, local + 6)? != flags || u16_at(bytes, local + 8)? != method {
+                return Err(FormatError::corrupt(format!("zip entry `{name}` has mismatched local header flags or method")));
+            }
+            // ZIP bit 3 permits a streaming writer to leave local CRC and sizes
+            // empty and place the real values in a data descriptor. The central
+            // header still supplies the authoritative, checked values.
+            if flags & 0x0008 == 0
+                && (u32_at(bytes, local + 14)? != crc
+                    || u32_at(bytes, local + 18)? as usize != compressed
+                    || u32_at(bytes, local + 22)? as usize != uncompressed)
+            {
+                return Err(FormatError::corrupt(format!("zip entry `{name}` has mismatched local CRC or size")));
+            }
+            let lnlen = u16_at(bytes, local + 26)? as usize;
+            let lelen = u16_at(bytes, local + 28)? as usize;
+            let local_name_end = local_header_end
+                .checked_add(lnlen)
+                .filter(|end| *end <= cd_off)
+                .ok_or_else(|| FormatError::corrupt("zip local filename out of range"))?;
+            if bytes.get(local_header_end..local_name_end) != Some(name_bytes) {
+                return Err(FormatError::corrupt(format!("zip entry `{name}` has mismatched local filename")));
+            }
+            let data_offset = local_name_end
+                .checked_add(lelen)
+                .filter(|end| *end <= cd_off)
+                .ok_or_else(|| FormatError::corrupt("zip local extra field out of range"))?;
+            if data_offset.checked_add(compressed).is_none_or(|end| end > cd_off) {
                 return Err(FormatError::corrupt(format!("zip entry `{name}` out of range")));
             }
             entries.push(Entry { name, method, crc, compressed, uncompressed, data_offset });
@@ -463,6 +496,46 @@ mod tests {
         assert!(writer.add("manifest.json", b"second").is_err());
         let archive = writer.finish().unwrap();
         assert_eq!(ZipReader::new(&archive).unwrap().entries.len(), 1);
+    }
+
+    #[test]
+    fn local_crc_or_length_disagreement_is_rejected_without_data_descriptor() {
+        let mut writer = ZipWriter::new();
+        writer.add("manifest.json", b"valid").unwrap();
+        let good = writer.finish().unwrap();
+        for (start, value) in [(14, 0u32), (18, 0u32), (22, 0u32)] {
+            let mut modified = good.clone();
+            modified[start..start + 4].copy_from_slice(&value.to_le_bytes());
+            assert!(matches!(ZipReader::new(&modified), Err(FormatError::Corrupt(_))), "local header offset {start}");
+        }
+    }
+
+    #[test]
+    fn valid_streaming_zip_data_descriptor_round_trips() {
+        let payload = b"valid";
+        let mut writer = ZipWriter::new();
+        writer.add("manifest.json", payload).unwrap();
+        let mut bytes = writer.finish().unwrap();
+        let old_eocd = bytes.len() - 22;
+        let old_central = u32_at(&bytes, old_eocd + 16).unwrap() as usize;
+
+        // A streamed ZIP can put zero CRC/sizes in the local header, append
+        // PK\\x07\\x08 + the real descriptor, and mark bit 3 in both headers.
+        let mut descriptor = Vec::new();
+        descriptor.extend_from_slice(&0x0807_4b50u32.to_le_bytes());
+        descriptor.extend_from_slice(&crc32(payload).to_le_bytes());
+        descriptor.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        descriptor.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        bytes.splice(old_central..old_central, descriptor);
+        let central = old_central + 16;
+        let eocd = old_eocd + 16;
+        bytes[6..8].copy_from_slice(&0x0808u16.to_le_bytes());
+        bytes[14..26].fill(0);
+        bytes[central + 8..central + 10].copy_from_slice(&0x0808u16.to_le_bytes());
+        bytes[eocd + 16..eocd + 20].copy_from_slice(&(central as u32).to_le_bytes());
+
+        let reader = ZipReader::new(&bytes).unwrap();
+        assert_eq!(reader.read_by_name("manifest.json", payload.len()).unwrap(), payload);
     }
 
     #[test]
